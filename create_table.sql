@@ -1,0 +1,27 @@
+CREATE TABLE alerts
+(
+    id            bigint                         NOT NULL primary key,
+    nws_url       character varying,
+    alert_cap     xml,
+    updated       timestamp without time zone,
+    published     timestamp without time zone,
+    author_name   character varying,
+    title         character varying,
+    summary       text,
+    cap_event     character varying,
+    cap_effective timestamp without time zone,
+    cap_expires   timestamp without time zone,
+    cap_status    integer,
+    link          character varying,
+    cap_msgtype   integer,
+    cap_category  integer,
+    cap_urgency   integer,
+    cap_severity  integer,
+    cap_certainty integer,
+    cap_areadesc  text,
+    cap_polygon   postgis.geometry(Polygon),
+    cap_geocode   json,
+    cap_parameter json,
+    created_at    timestamp(6) without time zone NOT NULL,
+    updated_at    timestamp(6) without time zone NOT NULL
+);
