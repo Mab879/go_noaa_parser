@@ -2,13 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/twpayne/go-geos"
+	pgxgeos "github.com/twpayne/pgx-geos"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -22,12 +28,179 @@ const (
 	Error  MsgType = 4
 )
 
+func StringToMsgType(s string) (MsgType, error) {
+	switch s {
+	case "Alert":
+		return Alert, nil
+	case "Update":
+		return Update, nil
+	case "Cancel":
+		return Cancel, nil
+	case "Ack":
+		return Ack, nil
+	case "Error":
+		return Error, nil
+	default:
+		return 0, fmt.Errorf("invalid MsgType: %s", s)
+	}
+}
+
 type Category int64
 
 const (
-	Geo Category = 0
-	Met Category = 1
+	Geo Category = iota
+	Met
+	Safety
+	Security
+	Rescue
+	Fire
+	Health
+	Env
+	Transport
+	Infra
+	CBRNE
+	Other
 )
+
+func StringToCategory(s string) (Category, error) {
+	switch s {
+	case "Geo":
+		return Geo, nil
+	case "Met":
+		return Met, nil
+	case "Safety":
+		return Safety, nil
+	case "Security":
+		return Security, nil
+	case "Rescue":
+		return Rescue, nil
+	case "Fire":
+		return Fire, nil
+	case "Health":
+		return Health, nil
+	case "Env":
+		return Env, nil
+	case "Transport":
+		return Transport, nil
+	case "Infra":
+		return Infra, nil
+	case "CBRNE":
+		return CBRNE, nil
+	case "Other":
+		return Other, nil
+	default:
+		return 0, fmt.Errorf("invalid Category: %s", s)
+	}
+
+}
+
+type Urgency int64
+
+const (
+	Immediate Urgency = iota
+	Expected
+	Future
+	Past
+	UnknownUrgency
+)
+
+func StringToUrgency(s string) (Urgency, error) {
+	switch s {
+	case "Immediate":
+		return Immediate, nil
+	case "Expected":
+		return Expected, nil
+	case "Future":
+		return Future, nil
+	case "Past":
+		return Past, nil
+	case "Unknown":
+		return UnknownUrgency, nil
+	default:
+		return 0, fmt.Errorf("invalid Urgency: %s", s)
+	}
+}
+
+type Severity int64
+
+const (
+	Extreme Severity = iota
+	Severe
+	Moderate
+	Minor
+	UnknownSeverity
+)
+
+func StringToSeverity(s string) (Severity, error) {
+	switch s {
+	case "Extreme":
+		return Extreme, nil
+	case "Severe":
+		return Severe, nil
+	case "Moderate":
+		return Moderate, nil
+	case "Minor":
+		return Minor, nil
+	case "Unknown":
+		return UnknownSeverity, nil
+	default:
+		return 0, fmt.Errorf("invalid Severity: %s", s)
+	}
+}
+
+type Certainty int64
+
+const (
+	Observed Certainty = iota
+	Likely
+	Possible
+	Unlikely
+	UnknownCertainty
+)
+
+func StringToCertainty(s string) (Certainty, error) {
+	switch s {
+	case "Observed":
+		return Observed, nil
+	case "Likely":
+		return Likely, nil
+	case "Possible":
+		return Possible, nil
+	case "Unlikely":
+		return Unlikely, nil
+	case "Unknown":
+		return UnknownCertainty, nil
+	default:
+		return 0, fmt.Errorf("invalid Certainty: %s", s)
+	}
+}
+
+type Status int64
+
+const (
+	Actual Status = iota
+	Exercise
+	System
+	Test
+	Draft
+)
+
+func StringToStatus(s string) (Status, error) {
+	switch s {
+	case "Actual":
+		return Actual, nil
+	case "Exercise":
+		return Exercise, nil
+	case "System":
+		return System, nil
+	case "Test":
+		return Test, nil
+	case "Draft":
+		return Draft, nil
+	default:
+		return 0, fmt.Errorf("invalid Status: %s", s)
+	}
+}
 
 // Feed was generated 2024-05-22 11:48:09 by https://xml-to-go.github.io/ in Ukraine.
 type Feed struct {
@@ -69,12 +242,12 @@ type Feed struct {
 		Effective time.Time `xml:"effective"`
 		Onset     time.Time `xml:"onset"`
 		Expires   time.Time `xml:"expires"`
-		Status    int       `xml:"status"`
-		MsgType   int       `xml:"msgType"`
-		Category  int       `xml:"category"`
-		Urgency   int       `xml:"urgency"`
-		Severity  int       `xml:"severity"`
-		Certainty int       `xml:"certainty"`
+		Status    string    `xml:"status"`
+		MsgType   string    `xml:"msgType"`
+		Category  string    `xml:"category"`
+		Urgency   string    `xml:"urgency"`
+		Severity  string    `xml:"severity"`
+		Certainty string    `xml:"certainty"`
 		AreaDesc  string    `xml:"areaDesc"`
 		Polygon   string    `xml:"polygon"`
 		Geocode   []struct {
@@ -101,19 +274,35 @@ type AlertObj struct {
 	capEvent     string
 	capEffective time.Time
 	capExpires   time.Time
-	capStatus    int
+	capStatus    Status
 	link         string
-	capMsgtype   int
-	capCategory  int
-	capUrgency   int
-	capSeverity  int
-	capCertainty int
+	capMsgType   MsgType
+	capCategory  Category
+	capUrgency   Urgency
+	capSeverity  Severity
+	capCertainty Certainty
 	capAreadesc  string
 	capPolygon   string
-	capGeocode   string
-	capParameter string
+	capGeocode   map[string]string
+	capParameter map[string]string
 	updatedAt    time.Time
 	createdAt    time.Time
+}
+
+func (a *AlertObj) InsertAlert(pool *pgxpool.Pool) {
+	insert_query :=
+		`INSERT INTO alerts (nws_url, updated, published, author_name, title, summary, cap_event, cap_effective, 
+         cap_expires, cap_status, link, cap_msgtype, cap_category, cap_urgency, cap_severity,
+         cap_certainty, cap_areadesc, cap_polygon, cap_geocode, cap_parameter, created_at, updated_at) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22);`
+	insert_query = strings.ReplaceAll(insert_query, "\n", "")
+	insert_query = strings.ReplaceAll(insert_query, "\t", "")
+	paramsJson, err := json.Marshal(a.capParameter)
+	geocodeJson, err := json.Marshal(a.capGeocode)
+	_, err = pool.Query(context.TODO(), insert_query, a.nwsUrl, a.updated, a.published, a.authorName, a.title, a.summary, a.capEvent, a.capEffective, a.capExpires, a.capStatus, a.link, a.capMsgType, a.capCategory, a.capUrgency, a.capSeverity, a.capCertainty, a.capAreadesc, a.capPolygon, geocodeJson, paramsJson, a.createdAt, a.updatedAt)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func GetUrlContents(url string) []byte {
@@ -129,17 +318,43 @@ func GetUrlContents(url string) []byte {
 	return content
 }
 
+func FormatPolygon(polygon string) string {
+	polygon = strings.Replace(polygon, " ", "T", -1)
+	polygon = strings.Replace(polygon, ",", " ", -1)
+	polygon = strings.Replace(polygon, "T", ",", -1)
+	return "POLYGON((" + polygon + "))"
+}
+
+func GetDatabasePool(databaseUrl string) (*pgxpool.Pool, error) {
+	config, err := pgxpool.ParseConfig(databaseUrl)
+	if err != nil {
+		return nil, err
+	}
+	config.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if err := pgxgeos.Register(ctx, conn, geos.NewContext()); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		return nil, err
+	}
+	return pool, nil
+}
+
 func main() {
-	connection, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	databaseUrl := os.Getenv("DATABASE_URL")
+	if databaseUrl == "" {
+		panic("DATABASE_URL is not set")
+	}
+	pool, err := GetDatabasePool(databaseUrl)
 	if err != nil {
 		panic(err)
 	}
-	defer func(connection *pgx.Conn, ctx context.Context) {
-		err := connection.Close(ctx)
-		if err != nil {
-			panic(err)
-		}
-	}(connection, context.Background())
+	defer pool.Close()
 	start := time.Now()
 	fmt.Println("Starting Import at: ", start.Format(time.Stamp))
 	alertUrl := "https://api.weather.gov/alerts/active.atom"
@@ -147,22 +362,28 @@ func main() {
 	fmt.Println("Get rawXmlData", len(rawXmlData))
 	feed := new(Feed)
 	err = xml.Unmarshal(rawXmlData, feed)
+	logger.Debug("Feed has been unmarshalled")
 	if err != nil {
 		panic(err)
 	}
 	fmt.Println("Feed Last Updated", feed.Updated)
+	var alertCount = 0
 	for _, entry := range feed.Entry {
+		fmt.Errorf("Entry: %v", entry.Title)
 		id := entry.ID
-		var alertCount = 0
-		err = connection.QueryRow(context.Background(), "select count(1) from alerts where nws_url = $1", id).Scan(&alertCount)
+		fmt.Println("Alert Count: ", alertCount)
+		fmt.Println("ID: ", id)
+		alertCount += 1
+		err = pool.QueryRow(context.Background(), "select count(1) from alerts where nws_url = $1", id).Scan(&alertCount)
 		if err != nil {
 			panic(err)
 		}
 		alert := new(AlertObj)
 		if alertCount != 0 {
-			err = connection.QueryRow(context.Background(), "select * from alerts where nws_url = $1", id).Scan(&alert)
+			err = pool.QueryRow(context.Background(), "select * from alerts where nws_url = $1", id).Scan(&alert)
 			continue
 		}
+		fmt.Errorf("Alert creating: %v", alert.nwsUrl)
 		alert.nwsUrl = entry.ID
 		alert.updated = entry.Updated
 		alert.published = entry.Published
@@ -172,13 +393,46 @@ func main() {
 		alert.capEvent = entry.Event
 		alert.capEffective = entry.Effective
 		alert.capExpires = entry.Expires
-		alert.capStatus = entry.Status
-		alert.capMsgtype = entry.MsgType
-		alert.capCategory = entry.Category
-		alert.capUrgency = entry.Urgency
-		alert.capSeverity = entry.Severity
-		alert.capCertainty = entry.Certainty
+		alert.link = entry.Link.Href
+		alert.capStatus, err = StringToStatus(entry.Status)
+		if err != nil {
+			log.Fatal(err)
+		}
+		alert.capMsgType, err = StringToMsgType(entry.MsgType)
+		if err != nil {
+			log.Fatal()
+		}
+		alert.capCategory, err = StringToCategory(entry.Category)
+		if err != nil {
+			log.Fatal(err)
+		}
+		alert.capUrgency, err = StringToUrgency(entry.Urgency)
+		if err != nil {
+			log.Fatal(err)
+		}
+		alert.capSeverity, err = StringToSeverity(entry.Severity)
+		if err != nil {
+			log.Fatal(err)
+		}
+		alert.capCertainty, err = StringToCertainty(entry.Certainty)
+		if err != nil {
+			log.Fatal(err)
+		}
 		alert.capAreadesc = entry.AreaDesc
-
+		alert.capGeocode = make(map[string]string)
+		for _, geocode := range entry.Geocode {
+			alert.capGeocode[geocode.ValueName] = geocode.Value
+		}
+		alert.capParameter = make(map[string]string)
+		for _, parameter := range entry.Parameter {
+			alert.capParameter[parameter.ValueName] = parameter.Value
+		}
+		alert.capPolygon = FormatPolygon(entry.Polygon)
+		now := time.Now()
+		alert.updatedAt = now
+		alert.createdAt = now
+		fmt.Errorf("Alert done creating: %v", alert.nwsUrl)
+		// Insert into database
+		alert.InsertAlert(pool)
 	}
 }
