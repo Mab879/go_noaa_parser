@@ -9,14 +9,31 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: alert_parse
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
     strategy:
       matrix:
         go: [ 'stable', 'oldstable' ]
     name: Go ${{ matrix.go }} - Run Program
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install gis dependencies
+        run: sudo apt-get install -y libgeos-dev
+      - name: Setup Database
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d alert_parse < ./create_table.sql
       - name: Setup go
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-      - run: go run main.go
+      - name: Run Program
+        run: DATABASE_URL=postgres://postgres:postgres@localhost:5432/alert_parse?sslmode=disable go run main.go
