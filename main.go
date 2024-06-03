@@ -287,21 +287,80 @@ type AlertObj struct {
 	capParameter map[string]string
 	updatedAt    time.Time
 	createdAt    time.Time
+	dbId         int
 }
 
+type QueryLogger struct{}
+
 func (a *AlertObj) InsertAlert(pool *pgxpool.Pool) {
-	insert_query :=
-		`INSERT INTO alerts (nws_url, updated, published, author_name, title, summary, cap_event, cap_effective, 
-         cap_expires, cap_status, link, cap_msgtype, cap_category, cap_urgency, cap_severity,
-         cap_certainty, cap_areadesc, cap_polygon, cap_geocode, cap_parameter, created_at, updated_at) 
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22);`
-	insert_query = strings.ReplaceAll(insert_query, "\n", "")
-	insert_query = strings.ReplaceAll(insert_query, "\t", "")
 	paramsJson, err := json.Marshal(a.capParameter)
-	geocodeJson, err := json.Marshal(a.capGeocode)
-	_, err = pool.Query(context.TODO(), insert_query, a.nwsUrl, a.updated, a.published, a.authorName, a.title, a.summary, a.capEvent, a.capEffective, a.capExpires, a.capStatus, a.link, a.capMsgType, a.capCategory, a.capUrgency, a.capSeverity, a.capCertainty, a.capAreadesc, a.capPolygon, geocodeJson, paramsJson, a.createdAt, a.updatedAt)
 	if err != nil {
 		panic(err)
+	}
+	geocodeJson, err := json.Marshal(a.capGeocode)
+	if err != nil {
+		panic(err)
+	}
+	// insert query
+	insertQuery := `insert into alerts (nws_url, updated, published, author_name, title, 
+										summary, cap_event, cap_effective, cap_expires, cap_status, link, cap_msgtype, 
+                    					cap_category, cap_urgency, cap_severity, cap_certainty, cap_areadesc, cap_polygon, 
+                    					cap_geocode, cap_parameter, created_at, updated_at) 
+						VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
+
+	insertQuery = strings.ReplaceAll(insertQuery, "\n", "")
+	insertQuery = strings.ReplaceAll(insertQuery, "\t", "")
+	var polygon any = nil
+	if a.capPolygon != "" {
+		polygon = a.capPolygon
+	}
+	r, err := pool.Query(context.Background(), insertQuery,
+		a.nwsUrl, a.updated, a.published, a.authorName, a.title,
+		a.summary, a.capEvent, a.capEffective, a.capExpires, a.capStatus, a.link, a.capMsgType,
+		a.capCategory, a.capUrgency, a.capSeverity, a.capCertainty, a.capAreadesc, polygon,
+		geocodeJson, paramsJson, a.createdAt, a.updatedAt)
+	if err != nil {
+		panic(err)
+	}
+	defer r.Close()
+	for r.Next() {
+		log.Println("Got an row when inserting.")
+	}
+}
+
+func (a *AlertObj) UpdateAlert(pool *pgxpool.Pool) {
+	paramsJson, err := json.Marshal(a.capParameter)
+	if err != nil {
+		panic(err)
+	}
+	geocodeJson, err := json.Marshal(a.capGeocode)
+	if err != nil {
+		panic(err)
+	}
+	var polygon any = nil
+	if a.capPolygon != "" {
+		polygon = a.capPolygon
+	}
+	updateQuery :=
+		`UPDATE alerts SET 
+                  updated = $1, published = $2, author_name = $3, title = $4, summary = $5, cap_event = $6, 
+                  cap_effective = $7, cap_expires = $8, cap_status = $9, link = $10, cap_msgtype = $11,
+                  cap_category = $12, cap_urgency = $13, cap_severity = $14, cap_certainty = $15, cap_areadesc = $16, 
+                  cap_polygon = $17, cap_geocode = $18, cap_parameter = $19, updated_at = $20
+			 WHERE nws_url = $21;`
+	updateQuery = strings.ReplaceAll(updateQuery, "\n", "")
+	updateQuery = strings.ReplaceAll(updateQuery, "\t", "")
+	r, err := pool.Query(context.Background(), updateQuery,
+		a.updatedAt, a.published, a.authorName, a.title, a.summary, a.capEvent,
+		a.capEffective, a.capExpires, a.capStatus, a.link, a.capMsgType,
+		a.capCategory, a.capUrgency, a.capSeverity, a.capCertainty, a.capAreadesc,
+		polygon, geocodeJson, paramsJson, a.updatedAt, a.nwsUrl)
+	if err != nil {
+		panic(err)
+	}
+	defer r.Close()
+	for r.Next() {
+		log.Println("Got an row when updating.")
 	}
 }
 
@@ -319,10 +378,17 @@ func GetUrlContents(url string) []byte {
 }
 
 func FormatPolygon(polygon string) string {
-	polygon = strings.Replace(polygon, " ", "T", -1)
-	polygon = strings.Replace(polygon, ",", " ", -1)
-	polygon = strings.Replace(polygon, "T", ",", -1)
-	return "POLYGON((" + polygon + "))"
+	polygon = strings.ReplaceAll(polygon, " ", "T")
+	polygon = strings.ReplaceAll(polygon, ",", " ")
+	polygon = strings.ReplaceAll(polygon, "T", ",")
+	cords := strings.Split(polygon, ",")
+	finalPolygon := ""
+	for cord := range cords {
+		parts := strings.Split(cords[cord], " ")
+		finalPolygon += parts[1] + " " + parts[0] + ", "
+	}
+	finalPolygon = finalPolygon[:len(finalPolygon)-2]
+	return "POLYGON((" + finalPolygon + "))"
 }
 
 func GetDatabasePool(databaseUrl string) (*pgxpool.Pool, error) {
@@ -336,12 +402,21 @@ func GetDatabasePool(databaseUrl string) (*pgxpool.Pool, error) {
 		}
 		return nil
 	}
-
 	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		return nil, err
 	}
 	return pool, nil
+}
+
+func UpdateAlertCap(pool *pgxpool.Pool, nws_url string) {
+	alertCap := GetUrlContents(nws_url)
+	updateQuery := `update alerts set alert_cap = $1 where nws_url = $2`
+	_, err := pool.Exec(context.Background(), updateQuery, alertCap, nws_url)
+	if err != nil {
+		panic(err)
+	}
+
 }
 
 func main() {
@@ -367,23 +442,16 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("Feed Last Updated", feed.Updated)
-	var alertCount = 0
 	for _, entry := range feed.Entry {
 		fmt.Errorf("Entry: %v", entry.Title)
 		id := entry.ID
-		fmt.Println("Alert Count: ", alertCount)
 		fmt.Println("ID: ", id)
-		alertCount += 1
+		alertCount := 0
 		err = pool.QueryRow(context.Background(), "select count(1) from alerts where nws_url = $1", id).Scan(&alertCount)
-		if err != nil {
+		if err != nil && err != pgx.ErrNoRows {
 			panic(err)
 		}
 		alert := new(AlertObj)
-		if alertCount != 0 {
-			err = pool.QueryRow(context.Background(), "select * from alerts where nws_url = $1", id).Scan(&alert)
-			continue
-		}
-		fmt.Errorf("Alert creating: %v", alert.nwsUrl)
 		alert.nwsUrl = entry.ID
 		alert.updated = entry.Updated
 		alert.published = entry.Published
@@ -427,12 +495,21 @@ func main() {
 		for _, parameter := range entry.Parameter {
 			alert.capParameter[parameter.ValueName] = parameter.Value
 		}
-		alert.capPolygon = FormatPolygon(entry.Polygon)
+		if entry.Polygon != "" {
+			alert.capPolygon = FormatPolygon(entry.Polygon)
+		} else {
+			alert.capPolygon = ""
+		}
 		now := time.Now()
 		alert.updatedAt = now
 		alert.createdAt = now
-		fmt.Errorf("Alert done creating: %v", alert.nwsUrl)
+		fmt.Errorf("alert done creating: %v", alert.nwsUrl)
 		// Insert into database
-		alert.InsertAlert(pool)
+		if alertCount > 0 {
+			alert.UpdateAlert(pool)
+		} else {
+			alert.InsertAlert(pool)
+		}
+		//UpdateAlertCap(pool, alert.nwsUrl)
 	}
 }

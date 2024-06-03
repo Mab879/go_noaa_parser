@@ -1,6 +1,8 @@
-CREATE TABLE alerts
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+CREATE TABLE IF NOT EXISTS alerts
 (
-    id            bigint                         NOT NULL primary key,
+    id            serial                        NOT NULL  primary key,
     nws_url       character varying,
     alert_cap     xml,
     updated       timestamp with time zone,
@@ -19,9 +21,12 @@ CREATE TABLE alerts
     cap_severity  integer,
     cap_certainty integer,
     cap_areadesc  text,
-    cap_polygon   public.geometry(Polygon),
+    cap_polygon   public.GEOMETRY(POLYGON, 4326),
     cap_geocode   json,
     cap_parameter json,
-    created_at    timestamp(6) without time zone NOT NULL,
-    updated_at    timestamp(6) without time zone NOT NULL
+    created_at    timestamp(6) with time zone NOT NULL,
+    updated_at    timestamp(6) with time zone NOT NULL
 );
+
+create unique index if not exists alerts_nws_url_uindex
+    on alerts (nws_url);
