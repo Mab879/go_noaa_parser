@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -442,6 +443,7 @@ func main() {
 		panic(err)
 	}
 	fmt.Println("Feed Last Updated", feed.Updated)
+	var wg sync.WaitGroup
 	for _, entry := range feed.Entry {
 		fmt.Errorf("Entry: %v", entry.Title)
 		id := entry.ID
@@ -510,6 +512,11 @@ func main() {
 		} else {
 			alert.InsertAlert(pool)
 		}
-		//UpdateAlertCap(pool, alert.nwsUrl)
+		wg.Add(1)
+		go func(pool *pgxpool.Pool, nws_url string) {
+			UpdateAlertCap(pool, alert.nwsUrl)
+			defer wg.Done()
+		}(pool, alert.nwsUrl)
 	}
+	wg.Wait()
 }
