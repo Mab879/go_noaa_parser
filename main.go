@@ -442,12 +442,12 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("Feed Last Updated", feed.Updated)
+	logger.Debug("Feed Last Updated", feed.Updated)
 	var wg sync.WaitGroup
 	for _, entry := range feed.Entry {
-		fmt.Errorf("Entry: %v", entry.Title)
+		logger.Debug("Entry: ", entry.Title)
 		id := entry.ID
-		fmt.Println("ID: ", id)
+		logger.Debug("ID: ", id)
 		alertCount := 0
 		err = pool.QueryRow(context.Background(), "select count(1) from alerts where nws_url = $1", id).Scan(&alertCount)
 		if err != nil && err != pgx.ErrNoRows {
